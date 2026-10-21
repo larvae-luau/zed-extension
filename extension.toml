@@ -1,7 +1,7 @@
 id = "larvae"
 name = "Larvae"
 description = "Lint diagnostics, formatting, and fixes for Luau, from larvae."
-version = "0.1.0"
+version = "0.1.0-rc"
 schema_version = 1
 authors = ["savruun"]
 repository = "https://github.com/larvae-luau/zed-extension"
