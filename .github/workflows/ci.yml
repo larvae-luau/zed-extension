@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, Clippy & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Zed reads the version from extension.toml, and the release checks
+      # the tag against both files, so the two must not drift.
+      - name: The versions agree
+        run: |
+          set -euo pipefail
+          CARGO=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          EXTENSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' extension.toml | head -1)
+
+          if [ "$CARGO" != "$EXTENSION" ]; then
+            echo "Cargo.toml says $CARGO and extension.toml says $EXTENSION" >&2
+            exit 1
+          fi
+
+      - name: rustfmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --locked --target wasm32-wasip2 -- -D warnings
+      - name: Build
+        run: cargo build --release --locked --target wasm32-wasip2

@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cheap and first: a tag that disagrees with the manifests would publish
+  # an extension that reports another version than its release.
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - id: tag
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          CARGO=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          EXTENSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' extension.toml | head -1)
+
+          if [ "$TAG" != "v$CARGO" ] || [ "$TAG" != "v$EXTENSION" ]; then
+            echo "tag $TAG does not match Cargo.toml $CARGO and extension.toml $EXTENSION" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build the extension
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target wasm32-wasip2
+
+      # Zed builds an extension from source when it installs one, so the
+      # wasm is a convenience for a reader who wants the exact artifact.
+      - name: Package
+        run: cp target/wasm32-wasip2/release/zed_larvae.wasm extension.wasm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: extension.wasm
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: dist
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # A tag with a prerelease suffix, ex: v0.1.0-rc, is an in-dev
+          # build: GitHub marks it Pre-release so nobody takes it for the
+          # current version.
+          prerelease=""
+          case "$TAG" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes $prerelease
+          fi
+
+          gh release upload "$TAG" dist/extension.wasm --clobber
